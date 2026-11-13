@@ -72,13 +72,13 @@ export function InstrumentKeyboard({
   useEffect(() => setOffset(Math.min(cols - 1, K)), [cols, K]);
 
   const grid = useMemo(() => buildGrid(K, cols, ROWS, Math.max(1, offset), shift), [K, cols, offset, shift]);
-  // Piano view: a standard two-octave keyboard (C to C, 7 white + 5 black keys per octave).
+  // Piano view: a standard three-octave keyboard (C to C, 7 white + 5 black keys per octave).
   // Linear mapping, as in the exported .kbm: the root key plays degree 0 and every key
   // above it steps one scale degree higher. `col` holds the MIDI note of the key.
   const pianoPads = useMemo(() => {
     const out: PadSpec[] = [];
     const start = Math.floor(state.rootMidi / 12) * 12 + shift * 12;
-    for (let midi = start; midi <= start + 24; midi++) {
+    for (let midi = start; midi < start + 36; midi++) {
       const index = midi - state.rootMidi;
       out.push({ id: `k${midi}`, index, degree: ((index % K) + K) % K, periodIndex: Math.floor(index / K), row: 0, col: midi });
     }
@@ -127,8 +127,15 @@ export function InstrumentKeyboard({
     const m = new Map<string, string>();
     if (isKeys) {
       // Piano view: the usual DAW "musical typing" layout from the first C.
-      const seq = ["KeyA", "KeyW", "KeyS", "KeyE", "KeyD", "KeyF", "KeyT", "KeyG", "KeyY", "KeyH", "KeyU", "KeyJ", "KeyK", "KeyO", "KeyL", "KeyP", "Semicolon", "Quote"];
-      pianoPads.forEach((pad, i) => seq[i] && m.set(seq[i], pad.id));
+      // Virtual-piano layout: white keys q w e … / , black keys on the row above them.
+      const whites = ["KeyQ", "KeyW", "KeyE", "KeyR", "KeyT", "KeyY", "KeyU", "KeyI", "KeyO", "KeyP", "KeyZ", "KeyX", "KeyC", "KeyV", "KeyB", "KeyN", "KeyM", "Comma", "Period", "Slash"];
+      const blacks = ["Digit2", "Digit3", "Digit5", "Digit6", "Digit7", "Digit9", "Digit0", "KeyS", "KeyD", "KeyF", "KeyH", "KeyJ", "KeyL", "Semicolon", "Quote"];
+      let wi = 0;
+      let bi = 0;
+      pianoPads.forEach((pad) => {
+        const code = [1, 3, 6, 8, 10].includes(pad.col % 12) ? blacks[bi++] : whites[wi++];
+        if (code) m.set(code, pad.id);
+      });
       return m;
     }
     const bottomUp = [...grid].reverse();
@@ -421,7 +428,7 @@ export function InstrumentKeyboard({
             )}
             <p className="pads-hint">
               <Keyboard size={14} strokeWidth={1.5} aria-hidden="true" />
-              {isKeys ? <>White keys <kbd>A</kbd>–<kbd>'</kbd>, black keys <kbd>W</kbd> <kbd>E</kbd> <kbd>T</kbd> <kbd>Y</kbd> <kbd>U</kbd> · each key is one scale degree</> : <>Rows map to <kbd>Z</kbd>–<kbd>/</kbd>, <kbd>A</kbd>–<kbd>'</kbd>, <kbd>Q</kbd>–<kbd>]</kbd>, <kbd>1</kbd>–<kbd>=</kbd></>}
+              {isKeys ? <>White keys <kbd>Q</kbd>–<kbd>P</kbd>, <kbd>Z</kbd>–<kbd>/</kbd> · black keys <kbd>2</kbd> <kbd>3</kbd> <kbd>5</kbd> <kbd>6</kbd> <kbd>7</kbd> <kbd>9</kbd> <kbd>0</kbd> <kbd>S</kbd>… · each key is one scale degree</> : <>Rows map to <kbd>Z</kbd>–<kbd>/</kbd>, <kbd>A</kbd>–<kbd>'</kbd>, <kbd>Q</kbd>–<kbd>]</kbd>, <kbd>1</kbd>–<kbd>=</kbd></>}
             </p>
           </div>
           {!audioReady && <p className="audio-hint">Audio wakes on your first touch — press any pad or key to begin.</p>}
@@ -434,8 +441,10 @@ export function InstrumentKeyboard({
 
 /** Standard piano: 7 white and 5 black keys per octave. `p.col` is the key's MIDI note. */
 const BLACK = new Set([1, 3, 6, 8, 10]);
+const SHARP_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+const keyName = (midi: number) => `${SHARP_NAMES[midi % 12]}${Math.floor(midi / 12) - 1}`;
 // Horizontal centre of each black key, in white-key widths from the octave's C.
-const BLACK_POS: Record<number, number> = { 1: 0.62, 3: 1.38, 6: 3.6, 8: 4.5, 10: 5.4 };
+const BLACK_POS: Record<number, number> = { 1: 1, 3: 2, 6: 4, 8: 5, 10: 6 };
 
 function PianoKeys({
   pads,
@@ -461,7 +470,7 @@ function PianoKeys({
   const start = pads[0].col;
   const whites = pads.filter((p) => !BLACK.has(p.col % 12)).length;
   const w = 100 / whites;
-  const bw = w * 0.58;
+  const bw = w * 0.6;
   const pos = (midi: number) => {
     const oct = Math.floor((midi - start) / 12);
     const pc = midi % 12;
@@ -472,7 +481,7 @@ function PianoKeys({
   const ordered = [...pads.filter((p) => !BLACK.has(p.col % 12)), ...pads.filter((p) => BLACK.has(p.col % 12))];
 
   return (
-    <div className="piano" role="group" aria-label="Piano keyboard, two octaves. Each key plays the next scale degree.">
+    <div className="piano" role="group" aria-label="Piano keyboard, three octaves. Each key plays the next scale degree.">
       {ordered.map((p) => {
         const { left, width, black } = pos(p.col);
         const isRoot = p.degree === 0;
@@ -491,7 +500,7 @@ function PianoKeys({
               highlight === p.degree ? "is-highlight" : "",
             ].join(" ")}
             style={{ left: `${left}%`, width: `${width}%` }}
-            aria-label={`${midiName(p.col)} key: ${isRoot ? "root" : `degree ${p.degree}`}, period ${p.periodIndex}${kl ? `, computer key ${kl}` : ""}`}
+            aria-label={`${keyName(p.col)} key: ${isRoot ? "root" : `degree ${p.degree}`}, period ${p.periodIndex}${kl ? `, computer key ${kl}` : ""}`}
             aria-pressed={active.has(p.id)}
             onPointerDown={(e) => onDown(e, p)}
             onPointerUp={onUp}
@@ -500,9 +509,10 @@ function PianoKeys({
             onKeyUp={(e) => onKey(e, p, false)}
             onContextMenu={(e) => e.preventDefault()}
           >
+            {black && <span className="pkey-name">{keyName(p.col)}</span>}
             {kl && <span className="pkey-key">{kl}</span>}
-            {cl && !black && <span className="pkey-cents">{cl}</span>}
-            <span className="pkey-deg">{isRoot ? "R" : p.degree}</span>
+            <span className="pkey-deg" title={cl ? `${cl}¢` : undefined}>{isRoot ? "R" : p.degree}</span>
+            {!black && <span className="pkey-name">{keyName(p.col)}</span>}
           </button>
         );
       })}

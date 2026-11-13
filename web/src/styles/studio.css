@@ -617,3 +617,55 @@
   font-size: 8.5px;
   padding: 1px 5px;
 }
+
+/* Reference-style labels: note name at the bottom, key chip above, small scale degree */
+.pkey-name {
+  font-family: var(--sans);
+  font-size: 11px;
+  color: #8a857a;
+}
+.pkey--ivory .pkey-name {
+  bottom: 16px;
+}
+.pkey--ebony .pkey-name {
+  top: 14px;
+  font-size: 9.5px;
+  color: #8f8f8a;
+}
+.pkey--ivory .pkey-key {
+  bottom: 74px;
+}
+.pkey--ebony .pkey-key {
+  bottom: 40px;
+}
+.pkey--ivory .pkey-deg {
+  bottom: 42px;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 500;
+  color: #a08452;
+}
+.pkey--ebony .pkey-deg {
+  bottom: 14px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: #c9ad74;
+}
+.pkey--ivory.is-root .pkey-deg {
+  color: #b0362b;
+  font-weight: 600;
+}
+.pkey--ivory.is-root::after {
+  bottom: 6px;
+}
+.pkey-key {
+  width: 22px;
+  height: 20px;
+  line-height: 20px !important;
+  font-size: 11px;
+}
+@media (max-width: 640px) {
+  .pkey-name {
+    display: none;
+  }
+}

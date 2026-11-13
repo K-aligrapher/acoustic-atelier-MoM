@@ -73,15 +73,18 @@ export function InstrumentKeyboard({
   useEffect(() => setOffset(Math.min(cols - 1, K)), [cols, K]);
 
   const grid = useMemo(() => buildGrid(K, cols, ROWS, Math.max(1, offset), shift), [K, cols, offset, shift]);
-  // Piano view: two periods (plus the closing root) laid out as keys, starting at the register shift.
+  // Piano view: a standard two-octave keyboard (C to C, 7 white + 5 black keys per octave).
+  // Linear mapping, as in the exported .kbm: the root key plays degree 0 and every key
+  // above it steps one scale degree higher. `col` holds the MIDI note of the key.
   const pianoPads = useMemo(() => {
     const out: PadSpec[] = [];
-    for (let i = 0; i <= 2 * K; i++) {
-      const index = shift * K + i;
-      out.push({ id: `k${index}`, index, degree: ((index % K) + K) % K, periodIndex: Math.floor(index / K), row: 0, col: i });
+    const start = Math.floor(state.rootMidi / 12) * 12 + shift * 12;
+    for (let midi = start; midi <= start + 24; midi++) {
+      const index = midi - state.rootMidi;
+      out.push({ id: `k${midi}`, index, degree: ((index % K) + K) % K, periodIndex: Math.floor(index / K), row: 0, col: midi });
     }
     return out;
-  }, [K, shift]);
+  }, [K, shift, state.rootMidi]);
   const isKeys = state.view === "keys";
   const padById = useMemo(() => {
     const m = new Map<string, PadSpec>();
@@ -124,8 +127,8 @@ export function InstrumentKeyboard({
   const keyMap = useMemo(() => {
     const m = new Map<string, string>();
     if (isKeys) {
-      // Piano view: keys run left to right along Z.., then A.., Q.., 1..
-      const seq = KEY_ROWS.flat();
+      // Piano view: the usual DAW "musical typing" layout from the first C.
+      const seq = ["KeyA", "KeyW", "KeyS", "KeyE", "KeyD", "KeyF", "KeyT", "KeyG", "KeyY", "KeyH", "KeyU", "KeyJ", "KeyK", "KeyO", "KeyL", "KeyP", "Semicolon", "Quote"];
       pianoPads.forEach((pad, i) => seq[i] && m.set(seq[i], pad.id));
       return m;
     }
@@ -312,10 +315,6 @@ export function InstrumentKeyboard({
           {isKeys ? (
             <PianoKeys
               pads={pianoPads}
-              toneOf={(p) => {
-                const semis = state.tuning === "12tet" ? Math.round(tetCents[p.degree] / 100) : degrees[p.degree].nearest_12tet_semitones;
-                return { tone: p.degree === 0 ? "root" : isNaturalStep(rootPc + semis) ? "ivory" : "ebony", name: relativeNoteName(rootPc, semis) };
-              }}
               centsLabel={(p) => (state.showCents ? (state.tuning === "12tet" ? tetCents[p.degree] : degrees[p.degree].cents).toFixed(1) : null)}
               keyLabel={(p) => labelFor.get(p.id)}
               active={active}
@@ -433,7 +432,7 @@ export function InstrumentKeyboard({
             )}
             <p className="pads-hint">
               <Keyboard size={14} strokeWidth={1.5} aria-hidden="true" />
-              {isKeys ? <>Keys run along <kbd>Z</kbd>–<kbd>/</kbd>, then <kbd>A</kbd>–<kbd>'</kbd> and <kbd>Q</kbd>–<kbd>]</kbd></> : <>Rows map to <kbd>Z</kbd>–<kbd>/</kbd>, <kbd>A</kbd>–<kbd>'</kbd>, <kbd>Q</kbd>–<kbd>]</kbd>, <kbd>1</kbd>–<kbd>=</kbd></>}
+              {isKeys ? <>White keys <kbd>A</kbd>–<kbd>'</kbd>, black keys <kbd>W</kbd> <kbd>E</kbd> <kbd>T</kbd> <kbd>Y</kbd> <kbd>U</kbd> · each key is one scale degree</> : <>Rows map to <kbd>Z</kbd>–<kbd>/</kbd>, <kbd>A</kbd>–<kbd>'</kbd>, <kbd>Q</kbd>–<kbd>]</kbd>, <kbd>1</kbd>–<kbd>=</kbd></>}
             </p>
           </div>
           {!audioReady && <p className="audio-hint">Audio wakes on your first touch — press any pad or key to begin.</p>}
@@ -488,10 +487,13 @@ export function InstrumentKeyboard({
   );
 }
 
-/** Piano-style view: one key per scale step, ivory/ebony by the nearest 12-TET pitch class. */
+/** Standard piano: 7 white and 5 black keys per octave. `p.col` is the key's MIDI note. */
+const BLACK = new Set([1, 3, 6, 8, 10]);
+// Horizontal centre of each black key, in white-key widths from the octave's C.
+const BLACK_POS: Record<number, number> = { 1: 0.62, 3: 1.38, 6: 3.6, 8: 4.5, 10: 5.4 };
+
 function PianoKeys({
   pads,
-  toneOf,
   centsLabel,
   keyLabel: keyOf,
   active,
@@ -502,7 +504,6 @@ function PianoKeys({
   onKey,
 }: {
   pads: PadSpec[];
-  toneOf: (p: PadSpec) => { tone: string; name: string };
   centsLabel: (p: PadSpec) => string | null;
   keyLabel: (p: PadSpec) => string | undefined;
   active: Set<string>;
@@ -512,37 +513,24 @@ function PianoKeys({
   onUp: (e: React.PointerEvent<HTMLButtonElement>) => void;
   onKey: (e: React.KeyboardEvent<HTMLButtonElement>, p: PadSpec, down: boolean) => void;
 }) {
-  const info = pads.map((p) => ({ p, ...toneOf(p) }));
-  const whites = info.filter((k) => k.tone !== "ebony").length;
-  const w = 100 / Math.max(1, whites);
-  type K = (typeof info)[number];
-  // Ebony keys sit on the boundary after the preceding ivory key; runs of several are spread out.
-  const placed: { k: K; left: number; width: number; black: boolean }[] = [];
-  let wi = 0;
-  let run: K[] = [];
-  const flush = () => {
-    const bw = w * 0.72;
-    run.forEach((k, j) => {
-      const center = wi * w + (j - (run.length - 1) / 2) * bw * 1.05;
-      placed.push({ k, left: Math.max(0, Math.min(100 - bw, center - bw / 2)), width: bw, black: true });
-    });
-    run = [];
+  const start = pads[0].col;
+  const whites = pads.filter((p) => !BLACK.has(p.col % 12)).length;
+  const w = 100 / whites;
+  const bw = w * 0.58;
+  const pos = (midi: number) => {
+    const oct = Math.floor((midi - start) / 12);
+    const pc = midi % 12;
+    if (BLACK.has(pc)) return { left: (oct * 7 + BLACK_POS[pc]) * w - bw / 2, width: bw, black: true };
+    const wi = [0, 0, 1, 1, 2, 3, 3, 4, 4, 5, 5, 6][pc];
+    return { left: (oct * 7 + wi) * w, width: w, black: false };
   };
-  for (const k of info) {
-    if (k.tone === "ebony") run.push(k);
-    else {
-      flush();
-      placed.push({ k, left: wi * w, width: w, black: false });
-      wi++;
-    }
-  }
-  flush();
-  const ordered = [...placed.filter((x) => !x.black), ...placed.filter((x) => x.black)];
+  const ordered = [...pads.filter((p) => !BLACK.has(p.col % 12)), ...pads.filter((p) => BLACK.has(p.col % 12))];
+
   return (
-    <div className="piano" role="group" aria-label={`Piano keyboard, ${pads.length} keys across two periods`}>
-      {ordered.map(({ k, left, width, black }) => {
-        const { p } = k;
-        const isSel = selected?.degree === p.degree && selected.periodIndex === p.periodIndex;
+    <div className="piano" role="group" aria-label="Piano keyboard, two octaves. Each key plays the next scale degree.">
+      {ordered.map((p) => {
+        const { left, width, black } = pos(p.col);
+        const isRoot = p.degree === 0;
         const kl = keyOf(p);
         const cl = centsLabel(p);
         return (
@@ -551,13 +539,14 @@ function PianoKeys({
             type="button"
             className={[
               "pkey",
-              black ? "pkey--ebony" : k.tone === "root" ? "pkey--root" : "pkey--ivory",
+              black ? "pkey--ebony" : "pkey--ivory",
+              isRoot ? "is-root" : "",
               active.has(p.id) ? "is-active" : "",
-              isSel ? "is-selected" : selected?.degree === p.degree ? "is-degree" : "",
+              selected?.degree === p.degree && selected.periodIndex === p.periodIndex ? "is-selected" : "",
               highlight === p.degree ? "is-highlight" : "",
             ].join(" ")}
             style={{ left: `${left}%`, width: `${width}%` }}
-            aria-label={`${p.degree === 0 ? "Root" : `Degree ${p.degree}`}, period ${p.periodIndex}${kl ? `, key ${kl}` : ""}`}
+            aria-label={`${midiName(p.col)} key: ${isRoot ? "root" : `degree ${p.degree}`}, period ${p.periodIndex}${kl ? `, computer key ${kl}` : ""}`}
             aria-pressed={active.has(p.id)}
             onPointerDown={(e) => onDown(e, p)}
             onPointerUp={onUp}
@@ -567,9 +556,8 @@ function PianoKeys({
             onContextMenu={(e) => e.preventDefault()}
           >
             {kl && <span className="pkey-key">{kl}</span>}
-            <span className="pkey-name">{k.name}</span>
-            {cl && <span className="pkey-cents">{cl}</span>}
-            <span className="pkey-deg">{p.degree === 0 ? `R${p.periodIndex}` : p.degree}</span>
+            {cl && !black && <span className="pkey-cents">{cl}</span>}
+            <span className="pkey-deg">{isRoot ? "R" : p.degree}</span>
           </button>
         );
       })}

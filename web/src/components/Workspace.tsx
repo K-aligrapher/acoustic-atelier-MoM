@@ -1,6 +1,11 @@
+import { Download, Info, SlidersHorizontal } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { DEFAULT_ADSR, type ADSR } from "../lib/audio/engine";
+import { fmtDuration, fmtHz, titleFromFilename } from "../lib/format";
+import { AdsrPanel } from "./AdsrPanel";
+import { InfoTip } from "./InfoTip";
+import { Modal } from "./Modal";
 import type { AudioEngine } from "../lib/audio/engine";
-import { roman } from "../lib/format";
 import { freqToMidi, midiToFreq } from "../lib/music";
 import type { Analysis, ParamsForm, SoundSource } from "../lib/types";
 import { AdvancedParameters } from "./AdvancedParameters";
@@ -8,6 +13,7 @@ import { AnalysisProgress, type JobPhase } from "./AnalysisProgress";
 import { DissonanceCurve } from "./DissonanceCurve";
 import { ExportPanel } from "./ExportPanel";
 import { InstrumentKeyboard, type InstrumentState } from "./InstrumentKeyboard";
+import { ErrorNotice } from "./ErrorNotice";
 import { ScaleTable } from "./ScaleTable";
 import { SoundSummary } from "./SoundSummary";
 import { SpectrumPlot } from "./SpectrumPlot";
@@ -27,21 +33,6 @@ function sliceBuffer(buf: AudioBuffer, start: number): AudioBuffer {
   const out = new AudioBuffer({ length: buf.length - start, numberOfChannels: buf.numberOfChannels, sampleRate: buf.sampleRate });
   for (let c = 0; c < buf.numberOfChannels; c++) out.copyToChannel(buf.getChannelData(c).subarray(start) as Float32Array<ArrayBuffer>, c);
   return out;
-}
-
-function Section({ n, id, title, kicker, children, className = "" }: { n: number; id: string; title: string; kicker?: string; children: React.ReactNode; className?: string }) {
-  return (
-    <section className={`ws-section ${className}`} aria-labelledby={id}>
-      <header className="ws-section-head">
-        <span className="ws-section-num">{roman(n)}.</span>
-        <h2 id={id} className="ws-section-title">
-          {title}
-        </h2>
-        {kicker && <p className="ws-section-kicker">{kicker}</p>}
-      </header>
-      {children}
-    </section>
-  );
 }
 
 export function Workspace({
@@ -72,17 +63,32 @@ export function Workspace({
 
   const [inst, setInst] = useState<InstrumentState>(() => {
     const m = Math.round(freqToMidi(ref));
-    return { tuning: "generated", rootMidi: m, baseFreq: midiToFreq(m), volume: 0.8, envelope: "ring", showCents: true };
+    let view: "pads" | "keys" = "pads";
+    try {
+      if (localStorage.getItem("atelier.view") === "keys") view = "keys";
+    } catch {
+      /* storage unavailable */
+    }
+    return { tuning: "generated", rootMidi: m, baseFreq: midiToFreq(m), volume: 0.8, view, showCents: true };
   });
   const [selected, setSelected] = useState<{ degree: number; periodIndex: number } | null>({ degree: 0, periodIndex: 0 });
   const [hoverDegree, setHoverDegree] = useState<number | null>(null);
   const [playing, setPlaying] = useState(0);
-  const [canHold, setCanHold] = useState(false);
+  const [adsr, setAdsr] = useState<ADSR>(DEFAULT_ADSR);
+  const [tab, setTab] = useState<"curve" | "spectrum" | "scale">("curve");
+  const [modal, setModal] = useState<null | "about" | "refine" | "export">(null);
 
   const patchInst = useCallback((p: Partial<InstrumentState>) => setInst((s) => ({ ...s, ...p })), []);
 
   useEffect(() => engine.onActivity(setPlaying), [engine]);
   useEffect(() => engine.setVolume(inst.volume), [engine, inst.volume]);
+  useEffect(() => {
+    try {
+      localStorage.setItem("atelier.view", inst.view);
+    } catch {
+      /* storage unavailable */
+    }
+  }, [inst.view]);
   useEffect(() => {
     if (!tetAvailable && inst.tuning === "12tet") patchInst({ tuning: "generated" });
   }, [tetAvailable, inst.tuning, patchInst]);
@@ -100,8 +106,6 @@ export function Workspace({
     const a = segS + data.meta.region_start_ms / 1000 - playback.offsetS;
     const b = segS + data.meta.region_end_ms / 1000 - playback.offsetS;
     engine.setSample(playback.buffer, a > 0.02 && b > a ? { start: a, end: Math.min(b, playback.buffer.duration) } : null);
-    setCanHold(engine.canHold);
-    if (!engine.canHold && inst.envelope === "hold") patchInst({ envelope: "ring" });
   }, [engine, playback, data.meta.region_start_ms, data.meta.region_end_ms, analysis.segmentOffsetMs]);
 
   const centsFor = (degree: number, periodIndex: number) =>
@@ -111,7 +115,7 @@ export function Workspace({
 
   const playDegree = (degree: number, periodIndex = 0) => {
     const f = inst.baseFreq * Math.pow(2, centsFor(degree, periodIndex) / 1200);
-    engine.noteOn(`row-${degree}-${periodIndex}`, f / ref, "ring");
+    engine.trigger(`row-${degree}-${periodIndex}`, f / ref, adsr);
     setSelected({ degree, periodIndex });
   };
 
@@ -123,64 +127,171 @@ export function Workspace({
   const dirty = JSON.stringify(form) !== JSON.stringify(analysis.params);
   const busy = regen?.phase === "reading" || regen?.phase === "server";
 
+  const title =
+    source.kind === "reference-bell" ? "Reference Bell" : source.kind === "reference-harmonic" ? "Harmonic Reference" : titleFromFilename(source.name);
+  const ratio = data.scale.roughness_vs_12tet;
+  const pct = ratio !== null ? Math.round((1 - ratio) * 100) : null;
+
   return (
-    <main id="main" className={`workspace${busy ? " is-busy" : ""}`}>
-      <SoundSummary source={source} data={data} />
-
-      <AdvancedParameters
-        form={form}
-        onChange={onFormChange}
-        onRegenerate={onRegenerate}
-        onReset={onReset}
-        busy={busy}
-        dirty={dirty}
-        error={regen?.phase === "error" ? regen.error : null}
-        source={source}
-        autoRegion={autoRegion}
-      />
-
-      <Section n={1} id="sec-instrument" title="The Instrument" kicker="Your sample, transposed onto every degree of its own scale." className="ws-section--instrument">
-        <InstrumentKeyboard
-          degrees={data.scale.degrees}
-          tetCents={data.scale.twelve_tet_cents}
-          periodCents={data.scale.period_cents}
-          referenceHz={ref}
-          engine={engine}
-          state={inst}
-          setState={patchInst}
-          canHold={canHold}
-          selected={selected}
-          onSelect={setSelected}
-          highlight={hoverDegree}
-          playing={playing}
-          tetAvailable={tetAvailable}
-        />
-      </Section>
-
-      <Section n={2} id="sec-curve" title="The Dissonance Curve" kicker="Roughness of the sound against a transposed copy of itself.">
-        <DissonanceCurve
-          data={data}
-          selected={selected?.degree ?? null}
-          onSelect={(d) => playDegree(d, 0)}
-          hoverDegree={hoverDegree}
-          onHoverDegree={setHoverDegree}
-          showTet={inst.tuning === "12tet"}
-          rootPc={rootPc}
-        />
-      </Section>
-
-      <div className="ws-split">
-        <Section n={3} id="sec-spectrum" title="The Spectrum" kicker={`${data.partials.length} partials · ${data.meta.frames_averaged} averaged frames`}>
-          <SpectrumPlot data={data} threshold={data.params.peak_threshold_db} />
-        </Section>
-        <Section n={4} id="sec-scale" title="The Scale" kicker="Select a row to hear it.">
-          <ScaleTable data={data} selected={selected?.degree ?? null} onSelect={playDegree} hoverDegree={hoverDegree} rootPc={rootPc} />
-        </Section>
+    <main id="main" className={`studio${busy ? " is-busy" : ""}`}>
+      <div className="studio-bar">
+        <div className="studio-id">
+          <p className="eyebrow">The {title} Study</p>
+          <h1 className="studio-title">{title}</h1>
+        </div>
+        <dl className="studio-metrics">
+          <div>
+            <dt>Character</dt>
+            <dd className={`class-tag class-tag--${data.meta.classification}`}>{data.meta.classification}</dd>
+          </div>
+          <div>
+            <dt>Partials</dt>
+            <dd>{data.partials.length}</dd>
+          </div>
+          <div>
+            <dt>Notes</dt>
+            <dd>
+              {K}
+              <span className="dd-sub"> / {data.scale.period_cents.toFixed(data.scale.period_cents % 1 ? 1 : 0)}¢</span>
+            </dd>
+          </div>
+          <div>
+            <dt>
+              vs 12-TET
+              <InfoTip label="roughness comparison">
+                Total roughness of this scale divided by the same scale with each note moved to its own nearest 12-TET semitone.
+                Below 1.00 means smoother.
+              </InfoTip>
+            </dt>
+            <dd>
+              {ratio !== null ? (
+                <>
+                  {ratio.toFixed(2)}×<span className={`dd-sub ${pct! >= 0 ? "is-good" : "is-warn"}`}> {pct! >= 0 ? `${pct}% smoother` : `${-pct!}% rougher`}</span>
+                </>
+              ) : (
+                <span className="dd-na">n/a</span>
+              )}
+            </dd>
+          </div>
+          <div>
+            <dt>
+              Reference
+              <InfoTip label="reference pitch">
+                {data.meta.reference_kind === "fundamental" ? "Estimated fundamental" : "Lowest strong partial"}: the pitch the sample is
+                treated as having on the keyboard. Duration {fmtDuration(source.durationS)}, region {data.meta.region_mode}.
+              </InfoTip>
+            </dt>
+            <dd>{fmtHz(ref)}</dd>
+          </div>
+        </dl>
+        <div className="studio-actions">
+          <button type="button" className="btn btn--ghost btn--sm" onClick={() => setModal("about")}>
+            <Info size={15} strokeWidth={1.6} aria-hidden="true" />
+            About{data.warnings.length > 0 && <span className="badge" aria-label={`${data.warnings.length} notes`}>{data.warnings.length}</span>}
+          </button>
+          <button type="button" className="btn btn--ghost btn--sm" onClick={() => setModal("refine")}>
+            <SlidersHorizontal size={15} strokeWidth={1.6} aria-hidden="true" />
+            Refine{dirty && <span className="badge badge--dot" aria-label="changes not applied" />}
+          </button>
+          <button type="button" className="btn btn--outline btn--sm" onClick={() => setModal("export")}>
+            <Download size={15} strokeWidth={1.6} aria-hidden="true" />
+            Export
+          </button>
+        </div>
       </div>
 
-      <Section n={5} id="sec-export" title="Export" kicker="Take the tuning into Scala, Surge XT, Vital, Pianoteq or your DAW." className="ws-section--export">
-        <ExportPanel analysis={analysis} source={source} baseFreq={inst.baseFreq} rootMidi={inst.rootMidi} />
-      </Section>
+      <div className="studio-grid">
+        <section className="studio-inst" aria-label="The instrument">
+          <InstrumentKeyboard
+            degrees={data.scale.degrees}
+            tetCents={data.scale.twelve_tet_cents}
+            periodCents={data.scale.period_cents}
+            referenceHz={ref}
+            engine={engine}
+            state={inst}
+            setState={patchInst}
+            adsr={adsr}
+            selected={selected}
+            onSelect={setSelected}
+            highlight={hoverDegree}
+            playing={playing}
+            tetAvailable={tetAvailable}
+          />
+        </section>
+
+        <section className="studio-panel" aria-label="Analysis">
+          <div className="tabs" role="tablist" aria-label="Analysis views">
+            {(
+              [
+                ["curve", "Dissonance curve"],
+                ["spectrum", "Spectrum"],
+                ["scale", "Scale"],
+              ] as const
+            ).map(([k, l]) => (
+              <button key={k} type="button" role="tab" aria-selected={tab === k} className="tab" onClick={() => setTab(k)}>
+                {l}
+              </button>
+            ))}
+          </div>
+          <div className="tab-body" role="tabpanel">
+            {tab === "curve" && (
+              <DissonanceCurve
+                data={data}
+                selected={selected?.degree ?? null}
+                onSelect={(d) => playDegree(d, 0)}
+                hoverDegree={hoverDegree}
+                onHoverDegree={setHoverDegree}
+                showTet={inst.tuning === "12tet"}
+                rootPc={rootPc}
+                fill
+              />
+            )}
+            {tab === "spectrum" && <SpectrumPlot data={data} threshold={data.params.peak_threshold_db} fill />}
+            {tab === "scale" && (
+              <ScaleTable data={data} selected={selected?.degree ?? null} onSelect={playDegree} hoverDegree={hoverDegree} rootPc={rootPc} />
+            )}
+          </div>
+        </section>
+      </div>
+
+      <div className="studio-foot">
+        <AdsrPanel adsr={adsr} onChange={setAdsr} />
+      </div>
+
+      {modal === "about" && (
+        <Modal title="About this sound" kicker="Analysis summary" onClose={() => setModal(null)} wide>
+          <SoundSummary source={source} data={data} />
+        </Modal>
+      )}
+      {modal === "refine" && (
+        <Modal title="Refine the Instrument" kicker="Analysis parameters" onClose={() => setModal(null)} wide>
+          <AdvancedParameters
+            form={form}
+            onChange={onFormChange}
+            onRegenerate={() => {
+              onRegenerate();
+              setModal(null);
+            }}
+            onReset={onReset}
+            busy={busy}
+            dirty={dirty}
+            error={regen?.phase === "error" ? regen.error : null}
+            source={source}
+            autoRegion={autoRegion}
+            inModal
+          />
+        </Modal>
+      )}
+      {modal === "export" && (
+        <Modal title="Export" kicker="Scala · keyboard mapping · analysis data" onClose={() => setModal(null)} wide>
+          <ExportPanel analysis={analysis} source={source} baseFreq={inst.baseFreq} rootMidi={inst.rootMidi} />
+        </Modal>
+      )}
+      {regen?.phase === "error" && modal !== "refine" && (
+        <div className="regen-overlay">
+          <ErrorNotice error={regen.error} compact actions={<button type="button" className="btn btn--outline btn--sm" onClick={() => setModal("refine")}>Open parameters</button>} />
+        </div>
+      )}
 
       {regen && regen.phase !== "error" && (
         <div className="regen-overlay" role="dialog" aria-modal="false" aria-label="Regenerating the scale">

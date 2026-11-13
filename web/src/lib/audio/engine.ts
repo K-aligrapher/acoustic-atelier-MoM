@@ -7,7 +7,21 @@
  * the dissonance model's assumption.
  */
 
-export type EnvelopeMode = "ring" | "hold";
+/** Amplitude envelope. Times in seconds, sustain is a level from 0 to 1. */
+export interface ADSR {
+  attack: number;
+  decay: number;
+  sustain: number;
+  release: number;
+}
+
+export const ADSR_PRESETS: Record<string, ADSR> = {
+  "Bell (natural)": { attack: 0.002, decay: 6, sustain: 0, release: 2.5 },
+  Pluck: { attack: 0.002, decay: 0.45, sustain: 0, release: 0.25 },
+  Pad: { attack: 0.6, decay: 0.8, sustain: 0.75, release: 1.6 },
+  Organ: { attack: 0.01, decay: 0.05, sustain: 1, release: 0.08 },
+};
+export const DEFAULT_ADSR: ADSR = ADSR_PRESETS["Bell (natural)"];
 
 interface Voice {
   padId: string;
@@ -15,6 +29,7 @@ interface Voice {
   gain: GainNode;
   started: number;
   releasing: boolean;
+  release: number;
 }
 
 const MAX_VOICES = 16;
@@ -111,7 +126,7 @@ export class AudioEngine {
     if (this.master && this.ctx) this.master.gain.setTargetAtTime(v, this.ctx.currentTime, 0.02);
   }
 
-  async noteOn(padId: string, rate: number, mode: EnvelopeMode) {
+  async noteOn(padId: string, rate: number, env: ADSR) {
     if (!this.sample) return;
     const ctx = await this.ensure();
     if (!this.master) return;
@@ -122,22 +137,28 @@ export class AudioEngine {
     while (live.length >= MAX_VOICES) this.release(live.shift()!, STEAL_TC);
 
     const t = ctx.currentTime;
-    const hold = mode === "hold" && this.loopBuffer && this.loop;
+    // A sustaining envelope needs the sample to keep sounding: loop the analysed region.
+    const loop = env.sustain > 0 && this.loopBuffer && this.loop;
     const src = ctx.createBufferSource();
-    src.buffer = hold ? this.loopBuffer : this.sample;
+    src.buffer = loop ? this.loopBuffer : this.sample;
     src.playbackRate.value = Math.max(0.01, Math.min(rate, 32));
-    if (hold && this.loop) {
+    if (loop && this.loop) {
       src.loop = true;
       src.loopStart = this.loop.start;
       src.loopEnd = this.loop.end;
     }
+    const peak = 0.9;
+    const a = Math.max(ATTACK_S, env.attack);
     const gain = ctx.createGain();
-    gain.gain.setValueAtTime(0, t);
-    gain.gain.linearRampToValueAtTime(0.9, t + ATTACK_S);
+    const g = gain.gain;
+    g.setValueAtTime(0, t);
+    g.linearRampToValueAtTime(peak, t + a);
+    // Exponential-style decay towards the sustain level (time constant = decay / 4).
+    g.setTargetAtTime(peak * env.sustain, t + a, Math.max(0.005, env.decay / 4));
     src.connect(gain).connect(this.master);
     src.start(t);
 
-    const voice: Voice = { padId, src, gain, started: t, releasing: false };
+    const voice: Voice = { padId, src, gain, started: t, releasing: false, release: env.release };
     src.onended = () => {
       gain.disconnect();
       this.voices = this.voices.filter((v) => v !== voice);
@@ -147,10 +168,15 @@ export class AudioEngine {
     this.emit();
   }
 
-  /** Release a held note. In "ring" mode notes are left to decay naturally. */
-  noteOff(padId: string, mode: EnvelopeMode) {
-    if (mode !== "hold") return;
-    for (const v of this.voices) if (v.padId === padId && !v.releasing) this.release(v, RELEASE_TC);
+  /** Key released: fade out over the envelope's release time. */
+  noteOff(padId: string) {
+    for (const v of this.voices) if (v.padId === padId && !v.releasing) this.release(v, Math.max(0.005, v.release / 5));
+  }
+
+  /** Play a note and release it automatically (for clicks on rows, curve points, Play). */
+  async trigger(padId: string, rate: number, env: ADSR, holdS = 0.35) {
+    await this.noteOn(padId, rate, env);
+    setTimeout(() => this.noteOff(padId), holdS * 1000);
   }
 
   private release(v: Voice, tc: number) {
@@ -158,8 +184,12 @@ export class AudioEngine {
     v.releasing = true;
     const t = this.ctx.currentTime;
     const g = v.gain.gain;
-    g.cancelScheduledValues(t);
-    g.setValueAtTime(g.value, t);
+    const held = g.value;
+    if (typeof g.cancelAndHoldAtTime === "function") g.cancelAndHoldAtTime(t);
+    else {
+      g.cancelScheduledValues(t);
+      g.setValueAtTime(held, t);
+    }
     g.setTargetAtTime(0, t, tc);
     try {
       v.src.stop(t + tc * 7);

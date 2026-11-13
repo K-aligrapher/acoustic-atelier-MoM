@@ -65,6 +65,7 @@ export function AdvancedParameters({
   error,
   source,
   autoRegion,
+  inModal = false,
 }: {
   form: ParamsForm;
   onChange: (patch: Partial<ParamsForm>) => void;
@@ -75,13 +76,15 @@ export function AdvancedParameters({
   error: unknown | null;
   source: SoundSource;
   autoRegion: { start_ms: number; end_ms: number } | null;
+  inModal?: boolean;
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(inModal);
   const panelId = useId();
   const isDefault = JSON.stringify(form) === JSON.stringify(DEFAULT_PARAMS);
 
   return (
-    <section className={`refine${open ? " is-open" : ""}`} aria-labelledby={`${panelId}-h`}>
+    <section className={`refine${open ? " is-open" : ""}${inModal ? " refine--modal" : ""}`} aria-labelledby={`${panelId}-h`}>
+      {!inModal && (
       <h2 id={`${panelId}-h`} className="refine-heading">
         <button type="button" className="refine-toggle" aria-expanded={open} aria-controls={panelId} onClick={() => setOpen((o) => !o)}>
           <SlidersHorizontal size={16} strokeWidth={1.5} aria-hidden="true" />
@@ -91,6 +94,8 @@ export function AdvancedParameters({
           <ChevronDown size={17} strokeWidth={1.5} className="refine-chev" aria-hidden="true" />
         </button>
       </h2>
+      )}
+      {inModal && dirty && <p className="refine-dirty refine-dirty--inline">Changes not yet applied</p>}
       <div id={panelId} className="refine-panel" hidden={!open}>
         <div className="param-grid">
           <Slider

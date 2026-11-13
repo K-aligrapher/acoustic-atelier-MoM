@@ -62,7 +62,9 @@ export function Documentation() {
               <li>Up to 16 voices sound at once; the oldest is released when you exceed that.</li>
               <li><b>Root</b> sets which pitch the root pad plays. <b>Native</b> plays the sample at its own pitch.</li>
               <li><b>12-TET</b> plays the same scale with every degree moved to its own nearest semitone — the fairest comparison with standard tuning.</li>
-              <li><b>Ring</b> lets notes decay naturally; <b>Hold</b> sustains them with a crossfaded loop while you hold a pad.</li>
+              <li><b>Pads / Keys</b> switches between the isomorphic pad grid and a piano-style keyboard (two periods, one key per scale step). Your choice is remembered.</li>
+              <li>The <b>ADSR</b> sliders shape every note: attack, decay, sustain level and release. With sustain above 0% the analysed part of the sample loops smoothly while a key is held; at 0% the sample plays once and dies away. Presets: Bell (natural), Pluck, Pad, Organ.</li>
+              <li>Extra details — the sound summary, analysis parameters and exports — open as pop-ups from <b>About</b>, <b>Refine</b> and <b>Export</b>.</li>
             </ul>
             <p>Audio starts after your first interaction with the page, as browsers require.</p>
           </section>

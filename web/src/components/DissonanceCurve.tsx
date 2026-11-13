@@ -5,6 +5,7 @@ import { useSize } from "../hooks/useSize";
 import { fmtRough, fmtSigned } from "../lib/format";
 import { nearestSimpleRatio, relativeNoteName } from "../lib/music";
 import type { AnalysisResponse } from "../lib/types";
+import { InfoTip } from "./InfoTip";
 
 const M = { top: 30, right: 18, bottom: 42, left: 62 };
 
@@ -16,6 +17,7 @@ export function DissonanceCurve({
   onHoverDegree,
   showTet,
   rootPc,
+  fill = false,
 }: {
   data: AnalysisResponse;
   selected: number | null;
@@ -24,9 +26,10 @@ export function DissonanceCurve({
   onHoverDegree: (d: number | null) => void;
   showTet: boolean;
   rootPc: number;
+  fill?: boolean;
 }) {
-  const [wrap, { width }] = useSize<HTMLDivElement>();
-  const height = width < 560 ? 280 : 360;
+  const [wrap, { width, height: measured }] = useSize<HTMLDivElement>();
+  const height = fill ? Math.max(150, Math.floor(measured)) : width < 560 ? 280 : 360;
   const [cursorC, setCursorC] = useState<number | null>(null);
 
   const { cents, roughness, minima } = data.curve;
@@ -83,15 +86,16 @@ export function DissonanceCurve({
   const activeDeg = hoverDegree ?? selected;
 
   return (
-    <figure className="plot plot--curve">
+    <figure className={`plot plot--curve${fill ? " plot--fill" : ""}`}>
       <div className="plot-legend" aria-hidden="true">
         <span className="lg lg--curve">Roughness curve</span>
         <span className="lg lg--degree">Scale degree</span>
         <span className="lg lg--min">Low-roughness minimum</span>
         <span className="lg lg--grid">12-TET semitone</span>
         {showTet && <span className="lg lg--tet">12-TET comparison</span>}
+        <InfoTip label="dissonance curve">The curve reveals how rough or smooth the sound becomes when transposed by different intervals. Selected notes are positioned to reduce roughness across the resulting scale. Hover to inspect; click a brass line to play that degree.</InfoTip>
       </div>
-      <div ref={wrap} className="plot-surface" style={{ height }}>
+      <div ref={wrap} className="plot-surface" style={fill ? undefined : { height }}>
         {width > 0 && (
           <svg
             width={width}

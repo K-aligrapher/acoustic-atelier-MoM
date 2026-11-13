@@ -1,6 +1,6 @@
-import { ChevronDown, ChevronUp, Keyboard, Play, Square, Volume2 } from "lucide-react";
+import { ChevronDown, ChevronUp, Grid3x3, Keyboard, Piano, Play, Square, Volume2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { AudioEngine, EnvelopeMode } from "../lib/audio/engine";
+import type { ADSR, AudioEngine } from "../lib/audio/engine";
 import { fmtHz, fmtSigned } from "../lib/format";
 import { useMediaQuery } from "../hooks/useSize";
 import {
@@ -16,7 +16,6 @@ import {
   type PadSpec,
 } from "../lib/music";
 import type { Degree } from "../lib/types";
-import { InfoTip } from "./InfoTip";
 
 export type Tuning = "generated" | "12tet";
 
@@ -25,7 +24,7 @@ export interface InstrumentState {
   rootMidi: number;
   baseFreq: number;
   volume: number;
-  envelope: EnvelopeMode;
+  view: "pads" | "keys";
   showCents: boolean;
 }
 
@@ -39,7 +38,7 @@ export function InstrumentKeyboard({
   engine,
   state,
   setState,
-  canHold,
+  adsr,
   selected,
   onSelect,
   highlight,
@@ -53,7 +52,7 @@ export function InstrumentKeyboard({
   engine: AudioEngine;
   state: InstrumentState;
   setState: (patch: Partial<InstrumentState>) => void;
-  canHold: boolean;
+  adsr: ADSR;
   selected: { degree: number; periodIndex: number } | null;
   onSelect: (s: { degree: number; periodIndex: number }) => void;
   highlight: number | null;
@@ -74,11 +73,21 @@ export function InstrumentKeyboard({
   useEffect(() => setOffset(Math.min(cols - 1, K)), [cols, K]);
 
   const grid = useMemo(() => buildGrid(K, cols, ROWS, Math.max(1, offset), shift), [K, cols, offset, shift]);
+  // Piano view: two periods (plus the closing root) laid out as keys, starting at the register shift.
+  const pianoPads = useMemo(() => {
+    const out: PadSpec[] = [];
+    for (let i = 0; i <= 2 * K; i++) {
+      const index = shift * K + i;
+      out.push({ id: `k${index}`, index, degree: ((index % K) + K) % K, periodIndex: Math.floor(index / K), row: 0, col: i });
+    }
+    return out;
+  }, [K, shift]);
+  const isKeys = state.view === "keys";
   const padById = useMemo(() => {
     const m = new Map<string, PadSpec>();
-    grid.flat().forEach((p) => m.set(p.id, p));
+    (isKeys ? pianoPads : grid.flat()).forEach((p) => m.set(p.id, p));
     return m;
-  }, [grid]);
+  }, [grid, pianoPads, isKeys]);
 
   const centsOf = useCallback(
     (degree: number, periodIndex: number) => {
@@ -93,31 +102,37 @@ export function InstrumentKeyboard({
   const press = useCallback(
     (pad: PadSpec) => {
       const f = state.baseFreq * Math.pow(2, centsOf(pad.degree, pad.periodIndex) / 1200);
-      engine.noteOn(pad.id, f / referenceHz, state.envelope).then(() => setAudioReady(engine.ready));
+      engine.noteOn(pad.id, f / referenceHz, adsr).then(() => setAudioReady(engine.ready));
       setActive((s) => new Set(s).add(pad.id));
       onSelect({ degree: pad.degree, periodIndex: pad.periodIndex });
     },
-    [engine, centsOf, state.baseFreq, state.envelope, referenceHz, onSelect],
+    [engine, centsOf, state.baseFreq, adsr, referenceHz, onSelect],
   );
   const release = useCallback(
     (padId: string) => {
-      engine.noteOff(padId, state.envelope);
+      engine.noteOff(padId);
       setActive((s) => {
         const n = new Set(s);
         n.delete(padId);
         return n;
       });
     },
-    [engine, state.envelope],
+    [engine],
   );
 
   // Computer keyboard: physical key rows map onto grid rows (bottom row = Z…/).
   const keyMap = useMemo(() => {
     const m = new Map<string, string>();
+    if (isKeys) {
+      // Piano view: keys run left to right along Z.., then A.., Q.., 1..
+      const seq = KEY_ROWS.flat();
+      pianoPads.forEach((pad, i) => seq[i] && m.set(seq[i], pad.id));
+      return m;
+    }
     const bottomUp = [...grid].reverse();
     bottomUp.forEach((row, r) => row.forEach((pad, c) => KEY_ROWS[r]?.[c] && m.set(KEY_ROWS[r][c], pad.id)));
     return m;
-  }, [grid]);
+  }, [grid, pianoPads, isKeys]);
   const labelFor = useMemo(() => {
     const m = new Map<string, string>();
     keyMap.forEach((pad, code) => m.set(pad, keyLabel(code)));
@@ -161,7 +176,7 @@ export function InstrumentKeyboard({
     const s = selected ?? { degree: 0, periodIndex: 0 };
     const id = `sel-${s.degree}-${s.periodIndex}`;
     const f = freqOf(s.degree, s.periodIndex);
-    engine.noteOn(id, f / referenceHz, "ring").then(() => setAudioReady(engine.ready));
+    engine.trigger(id, f / referenceHz, adsr).then(() => setAudioReady(engine.ready));
     onSelect(s);
   };
 
@@ -184,6 +199,14 @@ export function InstrumentKeyboard({
     <div className="instrument">
       <div className="toolbar" role="toolbar" aria-label="Playback controls">
         <div className="tool-group">
+          <div className="segmented segmented--view" role="radiogroup" aria-label="Instrument view">
+            <button type="button" role="radio" aria-checked={!isKeys} onClick={() => setState({ view: "pads" })}>
+              <Grid3x3 size={14} strokeWidth={1.6} aria-hidden="true" /> Pads
+            </button>
+            <button type="button" role="radio" aria-checked={isKeys} onClick={() => setState({ view: "keys" })}>
+              <Piano size={14} strokeWidth={1.6} aria-hidden="true" /> Keys
+            </button>
+          </div>
           <button type="button" className="tool-btn tool-btn--primary" onClick={playSelected} aria-label="Play selected note">
             <Play size={15} strokeWidth={1.8} aria-hidden="true" />
             <span>Play</span>
@@ -259,25 +282,6 @@ export function InstrumentKeyboard({
               12-TET
             </button>
           </div>
-          <div className="segmented" role="radiogroup" aria-label="Note envelope">
-            <button type="button" role="radio" aria-checked={state.envelope === "ring"} onClick={() => setState({ envelope: "ring" })}>
-              Ring
-            </button>
-            <button
-              type="button"
-              role="radio"
-              aria-checked={state.envelope === "hold"}
-              onClick={() => setState({ envelope: "hold" })}
-              disabled={!canHold}
-              title={canHold ? "Loop the analysed region while a pad is held" : "The sample is too short to loop"}
-            >
-              Hold
-            </button>
-          </div>
-          <InfoTip label="envelope">
-            <strong>Ring</strong> lets each note decay naturally. <strong>Hold</strong> sustains the note with a crossfaded loop
-            while you hold the pad, and releases it when you let go.
-          </InfoTip>
         </div>
 
         <div className="tool-group tool-group--end">
@@ -305,6 +309,37 @@ export function InstrumentKeyboard({
             </span>
           </div>
 
+          {isKeys ? (
+            <PianoKeys
+              pads={pianoPads}
+              toneOf={(p) => {
+                const semis = state.tuning === "12tet" ? Math.round(tetCents[p.degree] / 100) : degrees[p.degree].nearest_12tet_semitones;
+                return { tone: p.degree === 0 ? "root" : isNaturalStep(rootPc + semis) ? "ivory" : "ebony", name: relativeNoteName(rootPc, semis) };
+              }}
+              centsLabel={(p) => (state.showCents ? (state.tuning === "12tet" ? tetCents[p.degree] : degrees[p.degree].cents).toFixed(1) : null)}
+              keyLabel={(p) => labelFor.get(p.id)}
+              active={active}
+              selected={selected}
+              highlight={highlight}
+              onDown={(e, p) => {
+                if (e.button !== 0) return;
+                e.currentTarget.setPointerCapture(e.pointerId);
+                pointerPads.current.set(e.pointerId, p.id);
+                press(p);
+              }}
+              onUp={(e) => {
+                const id = pointerPads.current.get(e.pointerId);
+                pointerPads.current.delete(e.pointerId);
+                if (id) release(id);
+              }}
+              onKey={(e, p, down) => {
+                if (e.key !== "Enter" && e.key !== " ") return;
+                e.preventDefault();
+                if (down && !e.repeat) press(p);
+                if (!down) release(p.id);
+              }}
+            />
+          ) : (
           <div
             className="pads"
             style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}
@@ -371,6 +406,7 @@ export function InstrumentKeyboard({
               );
             })}
           </div>
+          )}
 
           <div className="pads-foot">
             <div className="pads-ctrl">
@@ -383,6 +419,7 @@ export function InstrumentKeyboard({
                 <ChevronUp size={15} aria-hidden="true" />
               </button>
             </div>
+            {!isKeys && (
             <label className="pads-ctrl">
               <span className="tool-label">Row offset</span>
               <select value={offset} onChange={(e) => setOffset(Number(e.target.value))} aria-label="Degrees between rows">
@@ -393,12 +430,13 @@ export function InstrumentKeyboard({
                 ))}
               </select>
             </label>
+            )}
             <p className="pads-hint">
               <Keyboard size={14} strokeWidth={1.5} aria-hidden="true" />
-              Rows map to <kbd>Z</kbd>–<kbd>/</kbd>, <kbd>A</kbd>–<kbd>'</kbd>, <kbd>Q</kbd>–<kbd>]</kbd>, <kbd>1</kbd>–<kbd>=</kbd>
+              {isKeys ? <>Keys run along <kbd>Z</kbd>–<kbd>/</kbd>, then <kbd>A</kbd>–<kbd>'</kbd> and <kbd>Q</kbd>–<kbd>]</kbd></> : <>Rows map to <kbd>Z</kbd>–<kbd>/</kbd>, <kbd>A</kbd>–<kbd>'</kbd>, <kbd>Q</kbd>–<kbd>]</kbd>, <kbd>1</kbd>–<kbd>=</kbd></>}
             </p>
           </div>
-          {!audioReady && <p className="audio-hint">Audio wakes on your first touch — press any pad to begin.</p>}
+          {!audioReady && <p className="audio-hint">Audio wakes on your first touch — press any pad or key to begin.</p>}
         </div>
 
         <aside className="ledger" aria-label="Selected note" aria-live="polite">
@@ -446,6 +484,95 @@ export function InstrumentKeyboard({
           )}
         </aside>
       </div>
+    </div>
+  );
+}
+
+/** Piano-style view: one key per scale step, ivory/ebony by the nearest 12-TET pitch class. */
+function PianoKeys({
+  pads,
+  toneOf,
+  centsLabel,
+  keyLabel: keyOf,
+  active,
+  selected,
+  highlight,
+  onDown,
+  onUp,
+  onKey,
+}: {
+  pads: PadSpec[];
+  toneOf: (p: PadSpec) => { tone: string; name: string };
+  centsLabel: (p: PadSpec) => string | null;
+  keyLabel: (p: PadSpec) => string | undefined;
+  active: Set<string>;
+  selected: { degree: number; periodIndex: number } | null;
+  highlight: number | null;
+  onDown: (e: React.PointerEvent<HTMLButtonElement>, p: PadSpec) => void;
+  onUp: (e: React.PointerEvent<HTMLButtonElement>) => void;
+  onKey: (e: React.KeyboardEvent<HTMLButtonElement>, p: PadSpec, down: boolean) => void;
+}) {
+  const info = pads.map((p) => ({ p, ...toneOf(p) }));
+  const whites = info.filter((k) => k.tone !== "ebony").length;
+  const w = 100 / Math.max(1, whites);
+  type K = (typeof info)[number];
+  // Ebony keys sit on the boundary after the preceding ivory key; runs of several are spread out.
+  const placed: { k: K; left: number; width: number; black: boolean }[] = [];
+  let wi = 0;
+  let run: K[] = [];
+  const flush = () => {
+    const bw = w * 0.72;
+    run.forEach((k, j) => {
+      const center = wi * w + (j - (run.length - 1) / 2) * bw * 1.05;
+      placed.push({ k, left: Math.max(0, Math.min(100 - bw, center - bw / 2)), width: bw, black: true });
+    });
+    run = [];
+  };
+  for (const k of info) {
+    if (k.tone === "ebony") run.push(k);
+    else {
+      flush();
+      placed.push({ k, left: wi * w, width: w, black: false });
+      wi++;
+    }
+  }
+  flush();
+  const ordered = [...placed.filter((x) => !x.black), ...placed.filter((x) => x.black)];
+  return (
+    <div className="piano" role="group" aria-label={`Piano keyboard, ${pads.length} keys across two periods`}>
+      {ordered.map(({ k, left, width, black }) => {
+        const { p } = k;
+        const isSel = selected?.degree === p.degree && selected.periodIndex === p.periodIndex;
+        const kl = keyOf(p);
+        const cl = centsLabel(p);
+        return (
+          <button
+            key={p.id}
+            type="button"
+            className={[
+              "pkey",
+              black ? "pkey--ebony" : k.tone === "root" ? "pkey--root" : "pkey--ivory",
+              active.has(p.id) ? "is-active" : "",
+              isSel ? "is-selected" : selected?.degree === p.degree ? "is-degree" : "",
+              highlight === p.degree ? "is-highlight" : "",
+            ].join(" ")}
+            style={{ left: `${left}%`, width: `${width}%` }}
+            aria-label={`${p.degree === 0 ? "Root" : `Degree ${p.degree}`}, period ${p.periodIndex}${kl ? `, key ${kl}` : ""}`}
+            aria-pressed={active.has(p.id)}
+            onPointerDown={(e) => onDown(e, p)}
+            onPointerUp={onUp}
+            onPointerCancel={onUp}
+            onKeyDown={(e) => onKey(e, p, true)}
+            onKeyUp={(e) => onKey(e, p, false)}
+            onContextMenu={(e) => e.preventDefault()}
+          >
+            {kl && <span className="pkey-key">{kl}</span>}
+            <span className="pkey-name">{k.name}</span>
+            {cl && <span className="pkey-cents">{cl}</span>}
+            <span className="pkey-deg">{p.degree === 0 ? `R${p.periodIndex}` : p.degree}</span>
+          </button>
+        );
+      })}
     </div>
   );
 }

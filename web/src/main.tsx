@@ -4,6 +4,7 @@ import App from "./App";
 import { ToastProvider } from "./components/Toast";
 import "./styles/tokens.css";
 import "./styles/app.css";
+import "./styles/studio.css";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

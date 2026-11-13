@@ -4,12 +4,13 @@ import { useMemo, useState } from "react";
 import { useSize } from "../hooks/useSize";
 import { fmtDb, fmtHz, fmtHzShort } from "../lib/format";
 import type { AnalysisResponse } from "../lib/types";
+import { InfoTip } from "./InfoTip";
 
 const M = { top: 22, right: 18, bottom: 40, left: 52 };
 
-export function SpectrumPlot({ data, threshold }: { data: AnalysisResponse; threshold: number }) {
-  const [wrap, { width }] = useSize<HTMLDivElement>();
-  const height = width < 560 ? 250 : 320;
+export function SpectrumPlot({ data, threshold, fill = false }: { data: AnalysisResponse; threshold: number; fill?: boolean }) {
+  const [wrap, { width, height: measured }] = useSize<HTMLDivElement>();
+  const height = fill ? Math.max(150, Math.floor(measured)) : width < 560 ? 250 : 320;
   const [hover, setHover] = useState<number | null>(null);
   const [cursor, setCursor] = useState<{ x: number; f: number } | null>(null);
 
@@ -62,13 +63,14 @@ export function SpectrumPlot({ data, threshold }: { data: AnalysisResponse; thre
   const hp = hover !== null ? partials[hover] : null;
 
   return (
-    <figure className="plot">
+    <figure className={`plot${fill ? " plot--fill" : ""}`}>
       <div className="plot-legend" aria-hidden="true">
         <span className="lg lg--spectrum">Averaged spectrum</span>
         <span className="lg lg--peak">Detected partial</span>
         <span className="lg lg--thresh">Peak threshold</span>
+        <InfoTip label="spectrum">Each peak represents a partial contributing to the sound's timbral character. Hover a peak for its frequency and level.</InfoTip>
       </div>
-      <div ref={wrap} className="plot-surface" style={{ height }}>
+      <div ref={wrap} className="plot-surface" style={fill ? undefined : { height }}>
         {width > 0 && (
           <svg
             width={width}

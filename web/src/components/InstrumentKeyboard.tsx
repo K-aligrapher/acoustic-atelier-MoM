@@ -1,7 +1,7 @@
 import { ChevronDown, ChevronUp, Grid3x3, Keyboard, Piano, Play, Square, Volume2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ADSR, AudioEngine } from "../lib/audio/engine";
-import { fmtHz, fmtSigned } from "../lib/format";
+import { fmtHz } from "../lib/format";
 import { useMediaQuery } from "../hooks/useSize";
 import {
   KEY_ROWS,
@@ -11,7 +11,6 @@ import {
   keyLabel,
   midiName,
   midiToFreq,
-  nearestSimpleRatio,
   relativeNoteName,
   type PadSpec,
 } from "../lib/music";
@@ -182,16 +181,6 @@ export function InstrumentKeyboard({
     engine.trigger(id, f / referenceHz, adsr).then(() => setAudioReady(engine.ready));
     onSelect(s);
   };
-
-  // Selected-note readout
-  const sel = selected ?? { degree: 0, periodIndex: 0 };
-  const selCents = centsOf(sel.degree, sel.periodIndex);
-  const selFreq = freqOf(sel.degree, sel.periodIndex);
-  const withinCents = state.tuning === "12tet" ? tetCents[sel.degree] : degrees[sel.degree].cents;
-  const ratio = nearestSimpleRatio(withinCents);
-  const n12 = Math.round(withinCents / 100);
-  const dev = withinCents - 100 * n12;
-  const rate = selFreq / referenceHz;
 
   const rootOptions = [];
   for (let m = 24; m <= 96; m++) rootOptions.push(m);
@@ -438,50 +427,6 @@ export function InstrumentKeyboard({
           {!audioReady && <p className="audio-hint">Audio wakes on your first touch — press any pad or key to begin.</p>}
         </div>
 
-        <aside className="ledger" aria-label="Selected note" aria-live="polite">
-          <p className="ledger-eyebrow">Selected note</p>
-          <p className="ledger-title">
-            {sel.degree === 0 ? "Root" : `Degree ${sel.degree}`}
-            <span className="ledger-period">period {sel.periodIndex >= 0 ? `+${sel.periodIndex}` : sel.periodIndex}</span>
-          </p>
-          <p className="ledger-cents">
-            {withinCents.toFixed(2)}
-            <span>¢</span>
-          </p>
-          <dl className="ledger-list">
-            <div>
-              <dt>Frequency</dt>
-              <dd>{fmtHz(selFreq)}</dd>
-            </div>
-            <div>
-              <dt>Interval from root</dt>
-              <dd>{selCents.toFixed(2)}¢</dd>
-            </div>
-            <div>
-              <dt>Nearest 12-TET</dt>
-              <dd>
-                {relativeNoteName(rootPc, n12)} <span className="dd-sub">{fmtSigned(dev)}¢</span>
-              </dd>
-            </div>
-            <div>
-              <dt>Simple ratio</dt>
-              <dd>{ratio ? <>{ratio.ratio} <span className="dd-sub">{fmtSigned(ratio.error)}¢</span></> : <span className="dd-na">none within 15¢</span>}</dd>
-            </div>
-            {state.tuning === "generated" && (
-              <div>
-                <dt>Roughness share</dt>
-                <dd>{degrees[sel.degree].roughness.toFixed(4)}</dd>
-              </div>
-            )}
-            <div>
-              <dt>Playback rate</dt>
-              <dd className={rate > 4 || rate < 0.25 ? "is-warn" : ""}>{rate.toFixed(3)}×</dd>
-            </div>
-          </dl>
-          {(rate > 4 || rate < 0.25) && (
-            <p className="ledger-note">This note is far from the sample's own pitch, so it may sound artificial.</p>
-          )}
-        </aside>
       </div>
     </div>
   );
